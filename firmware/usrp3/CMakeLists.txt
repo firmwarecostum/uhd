@@ -18,7 +18,7 @@
 ########################################################################
 # setup project and compiler
 ########################################################################
-CMAKE_MINIMUM_REQUIRED(VERSION 2.6)
+CMAKE_MINIMUM_REQUIRED(VERSION 2.6...4.0)
 #force the compiler because the check wont use the special flag below
 INCLUDE(CMakeForceCompiler)
 SET(CMAKE_SYSTEM_NAME Generic)
