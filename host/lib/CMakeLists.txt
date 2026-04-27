@@ -172,8 +172,29 @@ ENDIF(MSVC)
 ########################################################################
 # Setup libuhd library
 ########################################################################
-ADD_LIBRARY(uhd SHARED ${libuhd_sources})
-TARGET_LINK_LIBRARIES(uhd ${Boost_LIBRARIES} ${libuhd_libs})
+add_library(uhd SHARED ${libuhd_sources})
+if(DEFINED UHD_BOOST_REQUIRED_ADDITIONAL_WINDOWS_COMPONENTS)
+    # Define variable to expand target_link_libraries for
+    # both static and dynamic builds.
+    # Note: libuhd_libs is limited to dynamic linked build
+    set(libuhd_boost_msvc_libs "")
+    foreach(comp ${UHD_BOOST_REQUIRED_ADDITIONAL_WINDOWS_COMPONENTS})
+        list(APPEND libuhd_boost_msvc_libs Boost::${comp})
+    endforeach()
+endif(DEFINED UHD_BOOST_REQUIRED_ADDITIONAL_WINDOWS_COMPONENTS)
+target_link_libraries(uhd
+    PUBLIC
+    Boost::boost
+    Boost::chrono
+    Boost::date_time
+    Boost::filesystem
+    Boost::serialization
+    Boost::thread
+    ${libuhd_boost_msvc_libs}
+    ${libuhd_libs}
+    PRIVATE uhd_rc
+)
+
 SET_TARGET_PROPERTIES(uhd PROPERTIES DEFINE_SYMBOL "UHD_DLL_EXPORTS")
 IF(NOT LIBUHDDEV_PKG)
     SET_TARGET_PROPERTIES(uhd PROPERTIES SOVERSION "${UHD_VERSION_MAJOR}")
@@ -201,3 +222,4 @@ IF(ENABLE_STATIC_LIBS)
         ARCHIVE DESTINATION lib${LIB_SUFFIX} # .lib or .a file
     )
 ENDIF(ENABLE_STATIC_LIBS)
+
