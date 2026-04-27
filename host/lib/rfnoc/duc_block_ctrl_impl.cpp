@@ -21,8 +21,12 @@
 #include <uhd/convert.hpp>
 #include <uhd/types/ranges.hpp>
 #include <boost/math/special_functions/round.hpp>
+#include <boost/bind/bind.hpp>
+#include <functional>
 #include <cmath>
 
+using namespace boost::placeholders;
+using namespace std::placeholders;
 using namespace uhd::rfnoc;
 
 // TODO move this to a central location
@@ -53,43 +57,43 @@ public:
         for (size_t chan = 0; chan < get_input_ports().size(); chan++) {
             double default_freq = get_arg<double>("freq", chan);
             _tree->access<double>(get_arg_path("freq/value", chan))
-                .set_coercer(boost::bind(&duc_block_ctrl_impl::set_freq, this, _1, chan))
+                .set_coercer(boost::bind(&duc_block_ctrl_impl::set_freq, this, std::placeholders::_1, chan))
                 .set(default_freq);
             ;
             double default_input_rate = get_arg<double>("input_rate", chan);
             _tree->access<double>(get_arg_path("input_rate/value", chan))
-                .set_coercer(boost::bind(&duc_block_ctrl_impl::set_input_rate, this, _1, chan))
+                .set_coercer(boost::bind(&duc_block_ctrl_impl::set_input_rate, this, std::placeholders::_1, chan))
                 .set(default_input_rate)
             ;
             _tree->access<double>(get_arg_path("output_rate/value", chan))
-                .add_coerced_subscriber(boost::bind(&duc_block_ctrl_impl::set_output_rate, this, _1, chan))
+                .add_coerced_subscriber(boost::bind(&duc_block_ctrl_impl::set_output_rate, this, std::placeholders::_1, chan))
             ;
 
             // Legacy properties (for backward compat w/ multi_usrp)
             const uhd::fs_path dsp_base_path = _root_path / "legacy_api" / chan;
             // Legacy properties
             _tree->create<double>(dsp_base_path / "rate/value")
-                .set_coercer(boost::bind(&lambda_forward_prop, _tree, get_arg_path("input_rate/value", chan), _1))
+                .set_coercer(boost::bind(&lambda_forward_prop, _tree, get_arg_path("input_rate/value", chan), std::placeholders::_1))
                 .set_publisher(boost::bind(&lambda_forward_prop, _tree, get_arg_path("input_rate/value", chan)))
             ;
             _tree->create<uhd::meta_range_t>(dsp_base_path / "rate/range")
                 .set_publisher(boost::bind(&duc_block_ctrl_impl::get_input_rates, this))
             ;
             _tree->create<double>(dsp_base_path / "freq/value")
-                .set_coercer(boost::bind(&lambda_forward_prop, _tree, get_arg_path("freq/value", chan), _1))
+                .set_coercer(boost::bind(&lambda_forward_prop, _tree, get_arg_path("freq/value", chan), std::placeholders::_1))
                 .set_publisher(boost::bind(&lambda_forward_prop, _tree, get_arg_path("freq/value", chan)))
             ;
             _tree->create<uhd::meta_range_t>(dsp_base_path / "freq/range")
                 .set_publisher(boost::bind(&duc_block_ctrl_impl::get_freq_range, this))
             ;
             _tree->access<uhd::time_spec_t>("time/cmd")
-                .add_coerced_subscriber(boost::bind(&block_ctrl_base::set_command_time, this, _1, chan))
+                .add_coerced_subscriber(boost::bind(&block_ctrl_base::set_command_time, this, std::placeholders::_1, chan))
             ;
             if (_tree->exists("tick_rate")) {
                 const double tick_rate = _tree->access<double>("tick_rate").get();
                 set_command_tick_rate(tick_rate, chan);
                 _tree->access<double>("tick_rate")
-                    .add_coerced_subscriber(boost::bind(&block_ctrl_base::set_command_tick_rate, this, _1, chan))
+                    .add_coerced_subscriber(boost::bind(&block_ctrl_base::set_command_tick_rate, this, std::placeholders::_1, chan))
                 ;
             }
 
