@@ -16,13 +16,17 @@
 //
 
 #include "dsp_core_utils.hpp"
-#include <uhd/rfnoc/duc_block_ctrl.hpp>
+#include <uhd/rfnoc/ddc_block_ctrl.hpp>
 #include <uhd/utils/msg.hpp>
 #include <uhd/convert.hpp>
 #include <uhd/types/ranges.hpp>
 #include <boost/math/special_functions/round.hpp>
+#include <boost/bind/bind.hpp>
+#include <functional>
 #include <cmath>
 
+using namespace boost::placeholders;
+using namespace std::placeholders;
 using namespace uhd::rfnoc;
 
 // TODO move this to a central location
@@ -41,55 +45,55 @@ static double lambda_forward_prop(uhd::property_tree::sptr tree, uhd::fs_path pr
     return tree->access<double>(prop).get();
 }
 
-class duc_block_ctrl_impl : public duc_block_ctrl
+class ddc_block_ctrl_impl : public ddc_block_ctrl
 {
 public:
-    static const size_t NUM_HALFBANDS = 2;
-    static const size_t CIC_MAX_INTERP = 128;
+    static const size_t NUM_HALFBANDS = 3;
+    static const size_t CIC_MAX_DECIM = 255;
 
-    UHD_RFNOC_BLOCK_CONSTRUCTOR(duc_block_ctrl)
+    UHD_RFNOC_BLOCK_CONSTRUCTOR(ddc_block_ctrl)
     {
         // Argument/prop tree hooks
         for (size_t chan = 0; chan < get_input_ports().size(); chan++) {
             double default_freq = get_arg<double>("freq", chan);
             _tree->access<double>(get_arg_path("freq/value", chan))
-                .set_coercer(boost::bind(&duc_block_ctrl_impl::set_freq, this, _1, chan))
+                .set_coercer(boost::bind(&ddc_block_ctrl_impl::set_freq, this, std::placeholders::_1, chan))
                 .set(default_freq);
             ;
-            double default_input_rate = get_arg<double>("input_rate", chan);
-            _tree->access<double>(get_arg_path("input_rate/value", chan))
-                .set_coercer(boost::bind(&duc_block_ctrl_impl::set_input_rate, this, _1, chan))
-                .set(default_input_rate)
-            ;
+            double default_output_rate = get_arg<double>("output_rate", chan);
             _tree->access<double>(get_arg_path("output_rate/value", chan))
-                .add_coerced_subscriber(boost::bind(&duc_block_ctrl_impl::set_output_rate, this, _1, chan))
+                .set_coercer(boost::bind(&ddc_block_ctrl_impl::set_output_rate, this, std::placeholders::_1, chan))
+                .set(default_output_rate)
+            ;
+            _tree->access<double>(get_arg_path("input_rate/value", chan))
+                .add_coerced_subscriber(boost::bind(&ddc_block_ctrl_impl::set_input_rate, this, std::placeholders::_1, chan))
             ;
 
             // Legacy properties (for backward compat w/ multi_usrp)
             const uhd::fs_path dsp_base_path = _root_path / "legacy_api" / chan;
             // Legacy properties
             _tree->create<double>(dsp_base_path / "rate/value")
-                .set_coercer(boost::bind(&lambda_forward_prop, _tree, get_arg_path("input_rate/value", chan), _1))
-                .set_publisher(boost::bind(&lambda_forward_prop, _tree, get_arg_path("input_rate/value", chan)))
+                .set_coercer(boost::bind(&lambda_forward_prop, _tree, get_arg_path("output_rate/value", chan), std::placeholders::_1))
+                .set_publisher(boost::bind(&lambda_forward_prop, _tree, get_arg_path("output_rate/value", chan)))
             ;
             _tree->create<uhd::meta_range_t>(dsp_base_path / "rate/range")
-                .set_publisher(boost::bind(&duc_block_ctrl_impl::get_input_rates, this))
+                .set_publisher(boost::bind(&ddc_block_ctrl_impl::get_output_rates, this))
             ;
             _tree->create<double>(dsp_base_path / "freq/value")
-                .set_coercer(boost::bind(&lambda_forward_prop, _tree, get_arg_path("freq/value", chan), _1))
+                .set_coercer(boost::bind(&lambda_forward_prop, _tree, get_arg_path("freq/value", chan), std::placeholders::_1))
                 .set_publisher(boost::bind(&lambda_forward_prop, _tree, get_arg_path("freq/value", chan)))
             ;
             _tree->create<uhd::meta_range_t>(dsp_base_path / "freq/range")
-                .set_publisher(boost::bind(&duc_block_ctrl_impl::get_freq_range, this))
+                .set_publisher(boost::bind(&ddc_block_ctrl_impl::get_freq_range, this))
             ;
             _tree->access<uhd::time_spec_t>("time/cmd")
-                .add_coerced_subscriber(boost::bind(&block_ctrl_base::set_command_time, this, _1, chan))
+                .add_coerced_subscriber(boost::bind(&block_ctrl_base::set_command_time, this, std::placeholders::_1, chan))
             ;
             if (_tree->exists("tick_rate")) {
                 const double tick_rate = _tree->access<double>("tick_rate").get();
                 set_command_tick_rate(tick_rate, chan);
                 _tree->access<double>("tick_rate")
-                    .add_coerced_subscriber(boost::bind(&block_ctrl_base::set_command_tick_rate, this, _1, chan))
+                    .add_coerced_subscriber(boost::bind(&block_ctrl_base::set_command_tick_rate, this, std::placeholders::_1, chan))
                 ;
             }
 
@@ -99,12 +103,12 @@ public:
             sr_write("CONFIG", 1, chan); // Enable clear EOB
         }
     } // end ctor
-    virtual ~duc_block_ctrl_impl() {};
+    virtual ~ddc_block_ctrl_impl() {};
 
-    double get_input_scale_factor(size_t port=ANY_PORT)
+    double get_output_scale_factor(size_t port=ANY_PORT)
     {
-        port = (port == ANY_PORT) ? 0 : port;
-        if (not (_tx_streamer_active.count(port) and _tx_streamer_active.at(port))) {
+        port = port == ANY_PORT ? 0 : port;
+        if (not (_rx_streamer_active.count(port) and _rx_streamer_active.at(port))) {
             return SCALE_UNDEFINED;
         }
         return get_arg<double>("scalar_correction", port);
@@ -112,7 +116,24 @@ public:
 
     double get_input_samp_rate(size_t port=ANY_PORT)
     {
-        port = (port == ANY_PORT) ? 0 : port;
+        port = port == ANY_PORT ? 0 : port;
+        if (not (_tx_streamer_active.count(port) and _tx_streamer_active.at(port))) {
+            return RATE_UNDEFINED;
+        }
+        return get_arg<double>("input_rate", port);
+    }
+
+    double get_output_samp_rate(size_t port=ANY_PORT)
+    {
+        if (port == ANY_PORT) {
+            port = 0;
+            for (size_t i = 0; i < get_input_ports().size(); i++) {
+                if (_rx_streamer_active.count(i) and _rx_streamer_active.at(i)) {
+                    port = i;
+                    break;
+                }
+            }
+        }
 
         // Wait, what? If this seems out of place to you, you're right. However,
         // we need a function call that is called when the graph is complete,
@@ -122,38 +143,38 @@ public:
             set_command_tick_rate(tick_rate, port);
         }
 
-        if (not (_tx_streamer_active.count(port) and _tx_streamer_active.at(port))) {
+        if (not (_rx_streamer_active.count(port) and _rx_streamer_active.at(port))) {
             return RATE_UNDEFINED;
         }
-        return get_arg<double>("input_rate", port);
+        return get_arg<double>("output_rate", port);
     }
 
-    double get_output_samp_rate(size_t port=ANY_PORT)
-    {
-        port = (port == ANY_PORT) ? 0 : port;
-        if (not (_tx_streamer_active.count(port) and _tx_streamer_active.at(port))) {
-            return RATE_UNDEFINED;
-        }
-        return get_arg<double>("output_rate", port == ANY_PORT ? 0 : port);
-    }
 
     void issue_stream_cmd(
             const uhd::stream_cmd_t &stream_cmd_,
             const size_t chan
     ) {
-        UHD_RFNOC_BLOCK_TRACE() << "duc_block_ctrl_base::issue_stream_cmd()" << std::endl;
+        UHD_RFNOC_BLOCK_TRACE() << "ddc_block_ctrl_base::issue_stream_cmd()" << std::endl;
+
+        if (list_upstream_nodes().count(chan) == 0) {
+            UHD_MSG(status) << "No upstream blocks." << std::endl;
+            return;
+        }
 
         uhd::stream_cmd_t stream_cmd = stream_cmd_;
         if (stream_cmd.stream_mode == uhd::stream_cmd_t::STREAM_MODE_NUM_SAMPS_AND_DONE or
             stream_cmd.stream_mode == uhd::stream_cmd_t::STREAM_MODE_NUM_SAMPS_AND_MORE) {
-            size_t interpolation = get_arg<double>("output_rate", chan) / get_arg<double>("input_rate", chan);
-            stream_cmd.num_samps *= interpolation;
+            size_t decimation = get_arg<double>("input_rate", chan) / get_arg<double>("output_rate", chan);
+            stream_cmd.num_samps *= decimation;
         }
 
-        BOOST_FOREACH(const node_ctrl_base::node_map_pair_t upstream_node, list_upstream_nodes()) {
-            source_node_ctrl::sptr this_upstream_block_ctrl =
-                boost::dynamic_pointer_cast<source_node_ctrl>(upstream_node.second.lock());
-            this_upstream_block_ctrl->issue_stream_cmd(stream_cmd, chan);
+        source_node_ctrl::sptr this_upstream_block_ctrl =
+                boost::dynamic_pointer_cast<source_node_ctrl>(list_upstream_nodes().at(chan).lock());
+        if (this_upstream_block_ctrl) {
+            this_upstream_block_ctrl->issue_stream_cmd(
+                    stream_cmd,
+                    get_upstream_port(chan)
+            );
         }
     }
 
@@ -162,116 +183,120 @@ private:
     //! Set the CORDIC frequency shift the signal to \p requested_freq
     double set_freq(const double requested_freq, const size_t chan)
     {
-        const double output_rate = get_arg<double>("output_rate");
+        const double input_rate = get_arg<double>("input_rate");
         double actual_freq;
         int32_t freq_word;
-        get_freq_and_freq_word(requested_freq, output_rate, actual_freq, freq_word);
-        // Xilinx CORDIC uses a different format for the phase increment, hence the divide-by-four:
-        sr_write("CORDIC_FREQ", uint32_t(freq_word/4), chan);
+        get_freq_and_freq_word(requested_freq, input_rate, actual_freq, freq_word);
+        sr_write("CORDIC_FREQ", uint32_t(freq_word), chan);
         return actual_freq;
     }
 
     //! Return a range of valid frequencies the CORDIC can tune to
     uhd::meta_range_t get_freq_range(void)
     {
-        const double output_rate = get_arg<double>("output_rate");
+        const double input_rate = get_arg<double>("input_rate");
         return uhd::meta_range_t(
-                -output_rate/2,
-                +output_rate/2,
-                output_rate/std::pow(2.0, 32)
+                -input_rate/2,
+                +input_rate/2,
+                input_rate/std::pow(2.0, 32)
         );
     }
 
-    uhd::meta_range_t get_input_rates(void)
+    // FIXME this misses a whole bunch of valid rates. Anything with CIC decim <= 255
+    // is OK.
+    uhd::meta_range_t get_output_rates(void)
     {
         uhd::meta_range_t range;
-        const double output_rate = get_arg<double>("output_rate");
-        for (int rate = 512; rate > 256; rate -= 4){
-            range.push_back(uhd::range_t(output_rate/rate));
+        const double input_rate = get_arg<double>("input_rate");
+        for (int decim = 1024; decim > 512; decim -= 8){
+            range.push_back(uhd::range_t(input_rate/decim));
         }
-        for (int rate = 256; rate > 128; rate -= 2){
-            range.push_back(uhd::range_t(output_rate/rate));
+        for (int decim = 512; decim > 256; decim -= 4){
+            range.push_back(uhd::range_t(input_rate/decim));
         }
-        for (int rate = 128; rate >= 1; rate -= 1){
-            range.push_back(uhd::range_t(output_rate/rate));
+        for (int decim = 256; decim > 128; decim -= 2){
+            range.push_back(uhd::range_t(input_rate/decim));
+        }
+        for (int decim = 128; decim >= 1; decim -= 1){
+            range.push_back(uhd::range_t(input_rate/decim));
         }
         return range;
     }
 
-    double set_input_rate(const int requested_rate, const size_t chan)
+    double set_output_rate(const int requested_rate, const size_t chan)
     {
-        const double output_rate = get_arg<double>("output_rate", chan);
-        const size_t interp_rate = boost::math::iround(output_rate/get_input_rates().clip(requested_rate, true));
-        size_t interp = interp_rate;
+        const double input_rate = get_arg<double>("input_rate");
+        const size_t decim_rate = boost::math::iround(input_rate/this->get_output_rates().clip(requested_rate, true));
+        size_t decim = decim_rate;
 
+        // The FPGA knows which halfbands to enable for any given value of hb_enable.
         uint32_t hb_enable = 0;
-        while ((interp % 2 == 0) and hb_enable < NUM_HALFBANDS) {
+        while ((decim % 2 == 0) and hb_enable < NUM_HALFBANDS) {
             hb_enable++;
-            interp /= 2;
+            decim /= 2;
         }
         UHD_ASSERT_THROW(hb_enable <= NUM_HALFBANDS);
-        UHD_ASSERT_THROW(interp > 0 and interp <= CIC_MAX_INTERP);
-        // hacky hack: Unlike the DUC, the DUC actually simply has 2
-        // flags to enable either halfband.
-        uint32_t hb_enable_word = hb_enable;
-        if (hb_enable == 2) {
-            hb_enable_word = 3;
-        }
-        hb_enable_word <<= 8;
+        UHD_ASSERT_THROW(decim <= CIC_MAX_DECIM);
         // What we can't cover with halfbands, we do with the CIC
-        sr_write("INTERP_WORD", hb_enable_word | (interp & 0xff), chan);
+        sr_write("DECIM_WORD", (hb_enable << 8) | (decim & 0xff), chan);
 
         // Rate change = M/N
-        sr_write("N", 1, chan);
-        sr_write("M", std::pow(2.0, double(hb_enable)) * (interp & 0xff), chan);
+        sr_write("N", std::pow(2.0, double(hb_enable)) * (decim & 0xff), chan);
+        sr_write("M", 1, chan);
 
-        if (interp > 1 and hb_enable == 0) {
+        if (decim > 1 and hb_enable == 0) {
             UHD_MSG(warning) << boost::format(
-                "The requested interpolation is odd; the user should expect passband CIC rolloff.\n"
-                "Select an even interpolation to ensure that a halfband filter is enabled.\n"
-                "interpolation = dsp_rate/samp_rate -> %d = (%f MHz)/(%f MHz)\n"
-            ) % interp_rate % (output_rate/1e6) % (requested_rate/1e6);
+                "The requested decimation is odd; the user should expect passband CIC rolloff.\n"
+                "Select an even decimation to ensure that a halfband filter is enabled.\n"
+                "Decimations factorable by 4 will enable 2 halfbands, those factorable by 8 will enable 3 halfbands.\n"
+                "decimation = dsp_rate/samp_rate -> %d = (%f MHz)/(%f MHz)\n"
+            ) % decim_rate % (input_rate/1e6) % (requested_rate/1e6);
         }
 
-        // Calculate algorithmic gain of CIC for a given interpolation
-        // For Ettus CIC R=interp, M=1, N=4. Gain = (R * M) ^ (N - 1)
-        const int CIC_N = 4;
-        const double rate_pow = std::pow(double(interp & 0xff), CIC_N - 1);
-
-        // Experimentally determined value to scale the output to [-1, 1]
-        // This must also encompass the CORDIC gain
-        static const double CONSTANT_GAIN = 1.1644;
-
-        const double scaling_adjustment = std::pow(2, ceil_log2(rate_pow))/(CONSTANT_GAIN*rate_pow);
+        // Caclulate algorithmic gain of CIC for a given decimation.
+        // For Ettus CIC R=decim, M=1, N=4. Gain = (R * M) ^ N
+        const double rate_pow = std::pow(double(decim & 0xff), 4);
+        // Calculate compensation gain values for algorithmic gain of CORDIC and CIC taking into account
+        // gain compensation blocks already hardcoded in place in DDC (that provide simple 1/2^n gain compensation).
+        // CORDIC algorithmic gain limits asymptotically around 1.647 after many iterations.
+        static const double CORDIC_GAIN = 1.648;
+        //
+        // The polar rotation of [I,Q] = [1,1] by Pi/8 also yields max magnitude of SQRT(2) (~1.4142) however
+        // input to the CORDIC thats outside the unit circle can only be sourced from a saturated RF frontend.
+        // To provide additional dynamic range head room accordingly using scale factor applied at egress from DDC would
+        // cost us small signal performance, thus we do no provide compensation gain for a saturated front end and allow
+        // the signal to clip in the H/W as needed. If we wished to avoid the signal clipping in these circumstances then adjust code to read:
+        // _scaling_adjustment = std::pow(2, ceil_log2(rate_pow))/(CORDIC_GAIN*rate_pow*1.415);
+        const double scaling_adjustment = std::pow(2, ceil_log2(rate_pow))/(CORDIC_GAIN*rate_pow);
         update_scalar(scaling_adjustment, chan);
-        return output_rate/interp_rate;
+        return input_rate/decim_rate;
     }
 
-    //! Set frequency and interpolation again
-    void set_output_rate(const double /* rate */, const size_t chan)
+    //! Set frequency and decimation again
+    void set_input_rate(const double /* rate */, const size_t chan)
     {
         const double desired_freq = _tree->access<double>(get_arg_path("freq", chan) / "value").get_desired();
         set_arg<double>("freq", desired_freq, chan);
-        const double desired_input_rate = _tree->access<double>(get_arg_path("input_rate", chan) / "value").get_desired();
-        set_arg<double>("input_rate", desired_input_rate, chan);
+        const double desired_output_rate = _tree->access<double>(get_arg_path("output_rate", chan) / "value").get_desired();
+        set_arg<double>("output_rate", desired_output_rate, chan);
     }
 
     // Calculate compensation gain values for algorithmic gain of CORDIC and CIC taking into account
-    // gain compensation blocks already hardcoded in place in DUC (that provide simple 1/2^n gain compensation).
+    // gain compensation blocks already hardcoded in place in DDC (that provide simple 1/2^n gain compensation).
     // Further more factor in OTW format which adds further gain factor to weight output samples correctly.
     void update_scalar(const double scalar, const size_t chan)
     {
         const double target_scalar = (1 << 15) * scalar;
         const int32_t actual_scalar = boost::math::iround(target_scalar);
-        // Calculate the error introduced by using integer representation for the scalar
+        // Calculate the error introduced by using integer representation for the scalar, can be corrected in host later.
         const double scalar_correction =
-            actual_scalar / target_scalar * (double(1 << 15) - 1.0) // Rounding error, normalized to 1.0
+            target_scalar / actual_scalar / double(1 << 15) // Rounding error, normalized to 1.0
             * get_arg<double>("fullscale"); // Scaling requested by host
         set_arg<double>("scalar_correction", scalar_correction, chan);
-        // Write DUC with scaling correction for CIC and CORDIC that maximizes dynamic range in 32/16/12/8bits.
+        // Write DDC with scaling correction for CIC and CORDIC that maximizes dynamic range in 32/16/12/8bits.
         sr_write("SCALE_IQ", actual_scalar, chan);
     }
+
 };
 
-UHD_RFNOC_BLOCK_REGISTER(duc_block_ctrl, "DUC");
-
+UHD_RFNOC_BLOCK_REGISTER(ddc_block_ctrl, "DDC");
