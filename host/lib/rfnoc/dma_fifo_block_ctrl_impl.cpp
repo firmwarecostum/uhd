@@ -23,7 +23,11 @@
 #include <uhd/types/wb_iface.hpp>
 #include <boost/make_shared.hpp>
 #include <boost/thread/mutex.hpp>
+#include <boost/bind/bind.hpp>
+#include <functional>
 
+using namespace boost::placeholders;
+using namespace std::placeholders;
 using namespace uhd;
 using namespace uhd::rfnoc;
 
@@ -43,19 +47,19 @@ public:
                 // poke32 functor
                 boost::bind(
                     static_cast< void (block_ctrl_base::*)(const uint32_t, const uint32_t, const size_t) >(&block_ctrl_base::sr_write),
-                    this, _1, _2, i
+                    this, std::placeholders::_1, std::placeholders::_2, i
                 ),
                 // peek32 functor
                 boost::bind(
                     static_cast< uint32_t (block_ctrl_base::*)(const uint32_t, const size_t) >(&block_ctrl_base::user_reg_read32),
                     this,
-                    _1, i
+                    std::placeholders::_1, i
                 ),
                 // peek64 functor
                 boost::bind(
                     static_cast< uint64_t (block_ctrl_base::*)(const uint32_t, const size_t) >(&block_ctrl_base::user_reg_read64),
                     this,
-                    _1, i
+                    std::placeholders::_1, i
                 )
             );
             static const uint32_t USER_SR_BASE = 128*4;
@@ -81,11 +85,11 @@ public:
                 }
             }
             _tree->access<int>(get_arg_path("base_addr/value", i))
-                .add_coerced_subscriber(boost::bind(&dma_fifo_block_ctrl_impl::resize, this, _1, boost::ref(_perifs[i].depth), i))
+                .add_coerced_subscriber(boost::bind(&dma_fifo_block_ctrl_impl::resize, this, std::placeholders::_1, boost::ref(_perifs[i].depth), i))
                 .set(_perifs[i].base_addr)
             ;
             _tree->access<int>(get_arg_path("depth/value", i))
-                .add_coerced_subscriber(boost::bind(&dma_fifo_block_ctrl_impl::resize, this, boost::ref(_perifs[i].base_addr), _1, i))
+                .add_coerced_subscriber(boost::bind(&dma_fifo_block_ctrl_impl::resize, this, boost::ref(_perifs[i].base_addr), std::placeholders::_1, i))
                 .set(_perifs[i].depth)
             ;
         }
