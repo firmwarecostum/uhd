@@ -20,6 +20,7 @@
 
 #include <uhd/config.hpp>
 #include <stdint.h>
+#include <boost/bind/bind.hpp>
 #include <boost/shared_ptr.hpp>
 #include <iostream>
 
