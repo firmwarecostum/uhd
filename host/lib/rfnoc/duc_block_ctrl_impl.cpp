@@ -20,6 +20,7 @@
 #include <uhd/utils/msg.hpp>
 #include <uhd/convert.hpp>
 #include <uhd/types/ranges.hpp>
+#include <boost/bind.hpp>
 #include <boost/math/special_functions/round.hpp>
 #include <cmath>
 
