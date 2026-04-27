@@ -23,7 +23,11 @@
 #include <uhd/types/wb_iface.hpp>
 #include <boost/make_shared.hpp>
 #include <boost/thread/mutex.hpp>
+#include <boost/bind/bind.hpp>
+#include <functional>
 
+using namespace boost::placeholders;
+using namespace std::placeholders;
 using namespace uhd;
 using namespace uhd::rfnoc;
 
